@@ -3,26 +3,38 @@ universe:
   csv_url: "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
   fallback_csv: "data/ind_nifty500list.csv"
   symbol_suffix: ".NS"
-  # Default limit on symbols (null means full universe)
+  # null = full universe; set an integer to limit during testing
   limit: null
 
 signal:
-  fast_sma: 30
-  slow_sma: 50
   interval: "1wk"
-  min_bars: 55
+  # SMA periods
+  sma_entry: 30         # entry/exit SMA window
+  sma_slow: 50          # stored for reference
+  sma_trend: 200        # trend-context filter
+  # RSI
+  rsi_period: 14
+  rsi_sma_period: 14    # SMA overlay on RSI
+  rsi_entry_threshold: 60
+  # SuperTrend
+  supertrend_period: 10
+  supertrend_multiplier: 3.0
+  # Minimum bars needed before any signal is valid.
+  # SMA30 + RSI14 warmup ≈ 44 bars — used for the 3y backtest.
+  # SMA200 is computed/stored but will be NaN for most of a 3y window;
+  # it is populated fully when scan fetches 5y of history.
+  min_bars: 44
 
 backtest:
   years: 3
-  horizons: [5, 10, 20]
+  profit_milestone_pct: 20.0       # flag trades that hit +20% during holding
   output_events_csv: "data/backtest_events.csv"
   output_summary_csv: "data/backtest_summary.csv"
 
 scan:
-  output_csv: "data/golden_cross_alerts.csv"
+  output_csv: "data/scan_alerts.csv"
 
 cache:
   enabled: true
   cache_dir: "data/cache"
   max_cache_age_days: 3
-

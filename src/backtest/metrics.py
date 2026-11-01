@@ -1,166 +1,99 @@
-"""Statistical calculations, performance metrics, and baseline comparisons."""
+"""
+Aggregation and naive-baseline metrics for the strategy backtest.
+"""
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
+
 import numpy as np
 import pandas as pd
 
 
-def compute_trade_metrics(
-    df: pd.DataFrame,
-    entry_bar: int,
-    horizons: List[int] = [5, 10, 20]
-) -> Dict[str, Any]:
-    """
-    Compute forward returns and max drawdowns for a single crossover entry at entry_bar.
-    
-    Holding window for horizon H spans bars [entry_bar, entry_bar + H].
-    Returns dict containing forward returns and max drawdowns for each horizon.
-    If entry_bar + H >= len(df), horizon is marked pending/None.
-    """
-    n = len(df)
-    entry_close = float(df["Close"].iloc[entry_bar])
-    metrics: Dict[str, Any] = {}
-
-    highs = df["High"].values
-    lows = df["Low"].values
-    closes = df["Close"].values
-
-    for h in horizons:
-        exit_bar = entry_bar + h
-        if exit_bar < n:
-            exit_close = float(closes[exit_bar])
-            ret = (exit_close - entry_close) / entry_close
-
-            # Sub-window from entry_bar to exit_bar
-            win_highs = highs[entry_bar : exit_bar + 1]
-            win_lows = lows[entry_bar : exit_bar + 1]
-
-            # Peak-to-trough drawdown during the trade window
-            running_peak = np.maximum.accumulate(win_highs)
-            drawdowns = (win_lows - running_peak) / running_peak
-            max_dd = float(np.min(drawdowns))
-
-            # Max adverse excursion from entry price
-            mae_from_entry = float(np.min((win_lows - entry_close) / entry_close))
-
-            metrics[f"ret_{h}w"] = round(ret * 100, 2)
-            metrics[f"mdd_{h}w"] = round(max_dd * 100, 2)
-            metrics[f"mae_{h}w"] = round(mae_from_entry * 100, 2)
-            metrics[f"completed_{h}w"] = True
-        else:
-            metrics[f"ret_{h}w"] = np.nan
-            metrics[f"mdd_{h}w"] = np.nan
-            metrics[f"mae_{h}w"] = np.nan
-            metrics[f"completed_{h}w"] = False
-
-    return metrics
-
-
 def compute_naive_baseline(
     dfs: Dict[str, pd.DataFrame],
-    min_bar: int = 50,
-    horizons: List[int] = [5, 10, 20]
-) -> Dict[int, Dict[str, float]]:
+    avg_holding_weeks: float,
+    sma_min_bars: int = 30,
+) -> Dict[str, Any]:
     """
-    Compute naive unconditioned forward returns across all symbols and eligible bars.
-    Evaluates: "If you bought on any random week, what is the expected return?"
+    Naive baseline: average return of holding any stock unconditionally
+    for `avg_holding_weeks` weeks, starting from any eligible bar.
+
+    'Eligible bar' = bar has at least `avg_holding_weeks` future bars remaining.
     """
-    baseline_stats: Dict[int, Dict[str, float]] = {}
+    h = max(1, round(avg_holding_weeks))
+    returns: List[float] = []
 
-    for h in horizons:
-        returns_h: List[float] = []
-        for sym, df in dfs.items():
-            if df is None or len(df) < min_bar + h:
-                continue
-            closes = df["Close"].values
-            n = len(closes)
-            # Evaluate forward returns for every valid bar j
-            for j in range(min_bar, n - h):
-                c_entry = closes[j]
-                c_exit = closes[j + h]
-                if c_entry > 0:
-                    returns_h.append(((c_exit - c_entry) / c_entry) * 100)
+    for sym, df in dfs.items():
+        if df is None or len(df) < sma_min_bars + h:
+            continue
+        closes = df["Close"].values
+        n = len(closes)
+        for j in range(sma_min_bars, n - h):
+            c_entry = closes[j]
+            c_exit = closes[j + h]
+            if c_entry > 0:
+                returns.append((c_exit - c_entry) / c_entry * 100.0)
 
-        if returns_h:
-            arr = np.array(returns_h)
-            baseline_stats[h] = {
-                "sample_size": len(arr),
-                "win_rate_pct": round(float(np.mean(arr > 0)) * 100, 2),
-                "avg_return_pct": round(float(np.mean(arr)), 2),
-                "median_return_pct": round(float(np.median(arr)), 2),
-            }
-        else:
-            baseline_stats[h] = {
-                "sample_size": 0,
-                "win_rate_pct": 0.0,
-                "avg_return_pct": 0.0,
-                "median_return_pct": 0.0,
-            }
+    if not returns:
+        return {
+            "baseline_sample_size": 0,
+            "baseline_win_rate_pct": np.nan,
+            "baseline_avg_return_pct": np.nan,
+            "baseline_median_return_pct": np.nan,
+        }
 
-    return baseline_stats
+    arr = np.array(returns)
+    return {
+        "baseline_sample_size": len(arr),
+        "baseline_win_rate_pct": round(float(np.mean(arr > 0)) * 100, 2),
+        "baseline_avg_return_pct": round(float(np.mean(arr)), 2),
+        "baseline_median_return_pct": round(float(np.median(arr)), 2),
+    }
 
 
-def aggregate_backtest_results(
+def aggregate_trades(
     events_df: pd.DataFrame,
-    baseline_stats: Dict[int, Dict[str, float]],
-    horizons: List[int] = [5, 10, 20]
+    baseline: Dict[str, Any],
+    profit_milestone_pct: float = 20.0,
 ) -> pd.DataFrame:
     """
-    Aggregate trade events across all symbols into horizon summary metrics.
-    Compares signal performance against naive unconditional baseline.
+    Aggregate trade-level records into a single-row summary DataFrame.
+    Includes comparison to naive unconditional baseline.
     """
-    rows = []
+    if events_df.empty:
+        return pd.DataFrame()
 
-    for h in horizons:
-        col_ret = f"ret_{h}w"
-        col_mdd = f"mdd_{h}w"
+    rets = events_df["trade_return_pct"].values
+    mdd = events_df["max_drawdown_pct"].values
+    holding = events_df["holding_weeks"].values
 
-        if col_ret not in events_df.columns:
-            continue
+    milestone_col = f"hit_{int(profit_milestone_pct)}pct_milestone"
+    milestone_rate = (
+        events_df[milestone_col].sum() / len(events_df) * 100.0
+        if milestone_col in events_df.columns
+        else np.nan
+    )
 
-        valid = events_df.dropna(subset=[col_ret])
-        n_completed = len(valid)
+    still_open = int(events_df["still_open"].sum()) if "still_open" in events_df.columns else 0
 
-        if n_completed > 0:
-            rets = valid[col_ret].values
-            mdds = valid[col_mdd].values
+    avg_ret = float(np.mean(rets))
+    baseline_avg = baseline.get("baseline_avg_return_pct", np.nan)
+    excess = round(avg_ret - baseline_avg, 2) if not np.isnan(baseline_avg) else np.nan
 
-            win_rate = float(np.mean(rets > 0)) * 100
-            avg_ret = float(np.mean(rets))
-            median_ret = float(np.median(rets))
-            avg_mdd = float(np.mean(mdds))
-            worst_mdd = float(np.min(mdds))
+    summary = {
+        "Total Trades": len(events_df),
+        "Closed Trades": len(events_df) - still_open,
+        "Still Open (at end of data)": still_open,
+        "Win Rate (%)": round(float(np.mean(rets > 0)) * 100, 2),
+        "Avg Trade Return (%)": round(avg_ret, 2),
+        "Median Trade Return (%)": round(float(np.median(rets)), 2),
+        "Avg Holding Period (weeks)": round(float(np.mean(holding)), 1),
+        "Median Holding Period (weeks)": round(float(np.median(holding)), 1),
+        "Avg Max Drawdown (%)": round(float(np.mean(mdd)), 2),
+        "Worst Max Drawdown (%)": round(float(np.min(mdd)), 2),
+        f"Hit +{int(profit_milestone_pct)}% Milestone (%)": round(milestone_rate, 2),
+        "Baseline Win Rate (%)": baseline.get("baseline_win_rate_pct", np.nan),
+        "Baseline Avg Return (%)": baseline_avg,
+        "Excess Return vs Baseline (%)": excess,
+    }
 
-            base = baseline_stats.get(h, {})
-            base_avg = base.get("avg_return_pct", np.nan)
-            base_win = base.get("win_rate_pct", np.nan)
-            excess_ret = avg_ret - base_avg if not np.isnan(base_avg) else np.nan
-
-            rows.append({
-                "Horizon": f"+{h} Weeks",
-                "Completed Samples": n_completed,
-                "Win Rate (%)": round(win_rate, 2),
-                "Avg Return (%)": round(avg_ret, 2),
-                "Median Return (%)": round(median_ret, 2),
-                "Avg Max DD (%)": round(avg_mdd, 2),
-                "Worst Max DD (%)": round(worst_mdd, 2),
-                "Baseline Win Rate (%)": round(base_win, 2) if not np.isnan(base_win) else "N/A",
-                "Baseline Avg Return (%)": round(base_avg, 2) if not np.isnan(base_avg) else "N/A",
-                "Excess Return (%)": round(excess_ret, 2) if not np.isnan(excess_ret) else "N/A",
-            })
-        else:
-            rows.append({
-                "Horizon": f"+{h} Weeks",
-                "Completed Samples": 0,
-                "Win Rate (%)": 0.0,
-                "Avg Return (%)": 0.0,
-                "Median Return (%)": 0.0,
-                "Avg Max DD (%)": 0.0,
-                "Worst Max DD (%)": 0.0,
-                "Baseline Win Rate (%)": "N/A",
-                "Baseline Avg Return (%)": "N/A",
-                "Excess Return (%)": "N/A",
-            })
-
-    return pd.DataFrame(rows)
-
+    return pd.DataFrame([summary])

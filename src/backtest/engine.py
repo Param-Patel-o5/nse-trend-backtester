@@ -1,18 +1,19 @@
-"""Backtest engine orchestrating data loading, signal generation, and performance aggregation."""
+"""
+Backtest engine: orchestrates data loading, indicator computation,
+trade simulation, and result aggregation.
+"""
 
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
 import pandas as pd
 
-from src.backtest.metrics import (
-    aggregate_backtest_results,
-    compute_naive_baseline,
-    compute_trade_metrics,
-)
+from src.backtest.metrics import aggregate_trades, compute_naive_baseline
+from src.backtest.trades import simulate_trades
 from src.data.fetch import fetch_universe_data
 from src.data.symbols import get_nifty500_symbols, load_config
-from src.signals.sma_crossover import find_all_crossovers
+from src.signals.strategy import compute_all_indicators
 
 
 def run_backtest(
@@ -22,122 +23,123 @@ def run_backtest(
     force_refresh: bool = False,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, Any]]:
     """
-    Run historical backtest of weekly SMA crossover across universe.
-    Returns (summary_df, events_df, run_metadata).
+    Run full historical backtest.
+
+    Returns
+    -------
+    summary_df   : single-row aggregate stats
+    events_df    : trade-by-trade log
+    metadata     : run info dict
     """
     if config is None:
         config = load_config()
 
-    sig_cfg = config.get("signal", {})
-    bt_cfg = config.get("backtest", {})
-    cache_cfg = config.get("cache", {})
+    sig = config.get("signal", {})
+    bt = config.get("backtest", {})
+    cache = config.get("cache", {})
 
-    fast_sma = int(sig_cfg.get("fast_sma", 30))
-    slow_sma = int(sig_cfg.get("slow_sma", 50))
-    min_bars = int(sig_cfg.get("min_bars", 55))
-    interval = sig_cfg.get("interval", "1wk")
-    horizons: List[int] = bt_cfg.get("horizons", [5, 10, 20])
-    period = f"{years}y"
+    sma_entry = int(sig.get("sma_entry", 30))
+    sma_slow = int(sig.get("sma_slow", 50))
+    sma_trend = int(sig.get("sma_trend", 200))
+    rsi_period = int(sig.get("rsi_period", 14))
+    rsi_sma_period = int(sig.get("rsi_sma_period", 14))
+    rsi_threshold = float(sig.get("rsi_entry_threshold", 60.0))
+    st_period = int(sig.get("supertrend_period", 10))
+    st_mult = float(sig.get("supertrend_multiplier", 3.0))
+    min_bars = int(sig.get("min_bars", 215))
+    interval = sig.get("interval", "1wk")
 
-    cache_dir = cache_cfg.get("cache_dir", "data/cache")
-    max_cache_age_days = int(cache_cfg.get("max_cache_age_days", 3))
+    profit_milestone = float(bt.get("profit_milestone_pct", 20.0))
+    events_csv = bt.get("output_events_csv", "data/backtest_events.csv")
+    summary_csv = bt.get("output_summary_csv", "data/backtest_summary.csv")
+    period_str = f"{years}y"
 
-    events_csv = bt_cfg.get("output_events_csv", "data/backtest_events.csv")
-    summary_csv = bt_cfg.get("output_summary_csv", "data/backtest_summary.csv")
-
-    # 1. Fetch universe symbols
+    # ── 1. Load symbols ────────────────────────────────────────────────────
     symbols = get_nifty500_symbols(config, limit=limit)
-    print(f"\n[BACKTEST] Universe: {len(symbols)} symbols | Lookback: {period} | Interval: {interval}")
-    print(f"[BACKTEST] Strategy: SMA({fast_sma}) Golden Cross over SMA({slow_sma}) | Horizons: +{horizons} weeks")
+    print(f"\n[BACKTEST] Universe: {len(symbols)} symbols | Lookback: {period_str} | {interval}")
+    print(f"[BACKTEST] Entry: Close > SMA{sma_entry} AND RSI({rsi_period}) > {rsi_threshold}")
+    print(f"[BACKTEST] Exit : Close < SMA{sma_entry}")
 
-    # 2. Fetch price data
+    # ── 2. Fetch price data ────────────────────────────────────────────────
     dfs = fetch_universe_data(
         symbols=symbols,
-        period=period,
+        period=period_str,
         interval=interval,
-        cache_dir=cache_dir,
-        max_age_days=max_cache_age_days,
+        cache_dir=cache.get("cache_dir", "data/cache"),
+        max_age_days=int(cache.get("max_cache_age_days", 3)),
         force_refresh=force_refresh,
     )
 
     valid_dfs: Dict[str, pd.DataFrame] = {}
-    skipped_count = 0
-
+    skipped = 0
     for sym, df in dfs.items():
         if df is not None and len(df) >= min_bars:
             valid_dfs[sym] = df
         else:
-            skipped_count += 1
+            skipped += 1
 
-    print(
-        f"[BACKTEST] Clean symbols with >= {min_bars} weekly bars: {len(valid_dfs)} "
-        f"(skipped/insufficient: {skipped_count})"
-    )
+    print(f"[BACKTEST] Symbols with >= {min_bars} bars: {len(valid_dfs)} "
+          f"(skipped/insufficient: {skipped})")
 
-    # 3. Find historical crossovers and compute forward returns
-    all_events: List[Dict[str, Any]] = []
+    # ── 3. Compute indicators + simulate trades ────────────────────────────
+    all_trades: List[Dict[str, Any]] = []
 
     for sym, df in valid_dfs.items():
-        cross_events = find_all_crossovers(
-            df=df,
-            symbol=sym,
-            fast_period=fast_sma,
-            slow_period=slow_sma,
-            min_bars=min_bars,
-        )
-        for ev in cross_events:
-            entry_bar = ev["bar_index"]
-            metrics = compute_trade_metrics(df, entry_bar=entry_bar, horizons=horizons)
-            record = {
-                "symbol": ev["symbol"],
-                "crossover_date": ev["date_str"],
-                "entry_close": ev["close"],
-                f"sma{fast_sma}": ev[f"sma{fast_sma}"],
-                f"sma{slow_sma}": ev[f"sma{slow_sma}"],
-            }
-            record.update(metrics)
-            all_events.append(record)
+        try:
+            df_ind = compute_all_indicators(
+                df,
+                sma_entry=sma_entry,
+                sma_slow=sma_slow,
+                sma_trend=sma_trend,
+                rsi_period=rsi_period,
+                rsi_sma_period=rsi_sma_period,
+                supertrend_period=st_period,
+                supertrend_multiplier=st_mult,
+            )
+            trades = simulate_trades(
+                df_ind=df_ind,
+                symbol=sym.replace(".NS", ""),
+                sma_entry=sma_entry,
+                rsi_period=rsi_period,
+                rsi_threshold=rsi_threshold,
+                profit_milestone_pct=profit_milestone,
+            )
+            all_trades.extend(trades)
+        except Exception as e:
+            print(f"  [WARN] {sym}: {e}")
 
-    events_df = pd.DataFrame(all_events)
-    total_events = len(events_df)
-    print(f"[BACKTEST] Total golden-cross crossover events found: {total_events}")
+    events_df = pd.DataFrame(all_trades)
+    print(f"[BACKTEST] Total trades simulated: {len(events_df)}")
 
-    # 4. Compute naive baseline across universe
-    print("[BACKTEST] Computing unconditioned naive baseline forward returns...")
-    baseline_stats = compute_naive_baseline(
+    # ── 4. Naive baseline ──────────────────────────────────────────────────
+    avg_hold = float(events_df["holding_weeks"].mean()) if not events_df.empty else 10.0
+    print(f"[BACKTEST] Avg holding period: {avg_hold:.1f} weeks — computing baseline...")
+    baseline = compute_naive_baseline(
         dfs=valid_dfs,
-        min_bar=slow_sma,
-        horizons=horizons,
+        avg_holding_weeks=avg_hold,
+        sma_min_bars=sma_entry,
     )
 
-    # 5. Aggregate summary stats
+    # ── 5. Aggregate summary ───────────────────────────────────────────────
     if not events_df.empty:
-        summary_df = aggregate_backtest_results(
-            events_df=events_df,
-            baseline_stats=baseline_stats,
-            horizons=horizons,
-        )
+        summary_df = aggregate_trades(events_df, baseline, profit_milestone)
     else:
         summary_df = pd.DataFrame()
 
-    # 6. Save results to CSV
+    # ── 6. Persist CSVs ───────────────────────────────────────────────────
     Path(events_csv).parent.mkdir(parents=True, exist_ok=True)
-    Path(summary_csv).parent.mkdir(parents=True, exist_ok=True)
-
     events_df.to_csv(events_csv, index=False)
     summary_df.to_csv(summary_csv, index=False)
+    print(f"[BACKTEST] Saved events  -> {events_csv}")
+    print(f"[BACKTEST] Saved summary -> {summary_csv}")
 
     metadata = {
         "symbols_requested": len(symbols),
         "symbols_processed": len(valid_dfs),
-        "symbols_skipped": skipped_count,
-        "total_crossovers": total_events,
+        "symbols_skipped": skipped,
+        "total_trades": len(events_df),
+        "avg_hold_weeks": round(avg_hold, 1),
+        "baseline": baseline,
         "years": years,
-        "fast_sma": fast_sma,
-        "slow_sma": slow_sma,
-        "horizons": horizons,
-        "baseline_stats": baseline_stats,
     }
-
     return summary_df, events_df, metadata
-
