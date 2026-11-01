@@ -1,21 +1,15 @@
 """Command-line interface for live scanning and historical backtesting."""
 
-import os
 from pathlib import Path
 from typing import Optional
 
 import click
-from dotenv import load_dotenv
 import pandas as pd
 
-from src.alerts.telegram import format_scan_message, send_telegram_alert
 from src.backtest.engine import run_backtest
 from src.data.fetch import fetch_universe_data
 from src.data.symbols import get_nifty500_symbols, load_config
 from src.signals.sma_crossover import check_latest_crossover
-
-# Load environment variables (.env)
-load_dotenv()
 
 
 def print_banner(title: str) -> None:
@@ -96,9 +90,6 @@ def scan_cmd(limit: Optional[int], force_refresh: bool):
         out_df.to_csv(output_csv, index=False)
         print(f"\n[SCAN] Found {len(alerts)} crossover(s). Saved to: {output_csv}\n")
         print(out_df.to_string(index=False))
-
-        msg = format_scan_message(alerts, fast_sma=fast_sma, slow_sma=slow_sma)
-        send_telegram_alert(message=msg)
     else:
         print(f"\n[SCAN] No symbols triggered a golden cross in the latest week.")
         pd.DataFrame(columns=["symbol", "week_ending", "close", "sma30", "sma50"]).to_csv(
@@ -138,4 +129,3 @@ def backtest_cmd(years: int, report: bool, limit: Optional[int], force_refresh: 
 
 if __name__ == "__main__":
     cli()
-

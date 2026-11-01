@@ -1,2 +1,0 @@
-"""Alerts and notification dispatchers."""
-
