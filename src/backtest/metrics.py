@@ -1,5 +1,6 @@
 """
 Aggregation and naive-baseline metrics for the strategy backtest.
+Strictly separates realized closed trades from unrealized open positions.
 """
 
 from typing import Any, Dict, List
@@ -56,44 +57,75 @@ def aggregate_trades(
     profit_milestone_pct: float = 20.0,
 ) -> pd.DataFrame:
     """
-    Aggregate trade-level records into a single-row summary DataFrame.
-    Includes comparison to naive unconditional baseline.
+    Aggregate trade-level records into a structured summary DataFrame.
+    Strictly isolates realized closed trades from unrealized open positions.
     """
     if events_df.empty:
         return pd.DataFrame()
 
-    rets = events_df["trade_return_pct"].values
-    mdd = events_df["max_drawdown_pct"].values
-    holding = events_df["holding_weeks"].values
+    closed_df = events_df[events_df["still_open"] == False]
+    open_df = events_df[events_df["still_open"] == True]
 
     milestone_col = f"hit_{int(profit_milestone_pct)}pct_milestone"
-    milestone_rate = (
-        events_df[milestone_col].sum() / len(events_df) * 100.0
-        if milestone_col in events_df.columns
-        else np.nan
-    )
 
-    still_open = int(events_df["still_open"].sum()) if "still_open" in events_df.columns else 0
-
-    avg_ret = float(np.mean(rets))
-    baseline_avg = baseline.get("baseline_avg_return_pct", np.nan)
-    excess = round(avg_ret - baseline_avg, 2) if not np.isnan(baseline_avg) else np.nan
-
-    summary = {
-        "Total Trades": len(events_df),
-        "Closed Trades": len(events_df) - still_open,
-        "Still Open (at end of data)": still_open,
-        "Win Rate (%)": round(float(np.mean(rets > 0)) * 100, 2),
-        "Avg Trade Return (%)": round(avg_ret, 2),
-        "Median Trade Return (%)": round(float(np.median(rets)), 2),
-        "Avg Holding Period (weeks)": round(float(np.mean(holding)), 1),
-        "Median Holding Period (weeks)": round(float(np.median(holding)), 1),
-        "Avg Max Drawdown (%)": round(float(np.mean(mdd)), 2),
-        "Worst Max Drawdown (%)": round(float(np.min(mdd)), 2),
-        f"Hit +{int(profit_milestone_pct)}% Milestone (%)": round(milestone_rate, 2),
-        "Baseline Win Rate (%)": baseline.get("baseline_win_rate_pct", np.nan),
-        "Baseline Avg Return (%)": baseline_avg,
-        "Excess Return vs Baseline (%)": excess,
+    summary: Dict[str, Any] = {
+        "Total Trades Evaluated": len(events_df),
+        "Closed Trades (Realized)": len(closed_df),
+        "Open Trades (Unrealized)": len(open_df),
     }
+
+    # ── Realized Closed Trades ─────────────────────────────────────────────
+    if not closed_df.empty:
+        rets = closed_df["trade_return_pct"].values
+        mdd = closed_df["max_drawdown_pct"].values
+        mdd_close = closed_df["max_close_drawdown_pct"].values if "max_close_drawdown_pct" in closed_df.columns else mdd
+        holding = closed_df["holding_weeks"].values
+
+        avg_ret = float(np.mean(rets))
+        baseline_avg = baseline.get("baseline_avg_return_pct", np.nan)
+        excess = round(avg_ret - baseline_avg, 2) if not np.isnan(baseline_avg) else np.nan
+
+        closed_milestone = (
+            closed_df[milestone_col].sum() / len(closed_df) * 100.0
+            if milestone_col in closed_df.columns
+            else np.nan
+        )
+
+        summary.update({
+            "Closed: Win Rate (%)": round(float(np.mean(rets > 0)) * 100, 2),
+            "Closed: Avg Trade Return (%)": round(avg_ret, 2),
+            "Closed: Median Trade Return (%)": round(float(np.median(rets)), 2),
+            "Closed: Avg Holding Period (weeks)": round(float(np.mean(holding)), 1),
+            "Closed: Median Holding Period (weeks)": round(float(np.median(holding)), 1),
+            "Closed: Avg Max Drawdown (%)": round(float(np.mean(mdd)), 2),
+            "Closed: Worst Max Drawdown (%)": round(float(np.min(mdd)), 2),
+            "Closed: Avg Close-to-Close DD (%)": round(float(np.mean(mdd_close)), 2),
+            f"Closed: Hit +{int(profit_milestone_pct)}% Milestone (%)": round(closed_milestone, 2),
+            "Baseline: Holding Window (weeks)": round(float(np.mean(holding)), 1),
+            "Baseline: Win Rate (%)": baseline.get("baseline_win_rate_pct", np.nan),
+            "Baseline: Avg Return (%)": baseline_avg,
+            "Excess Return vs Baseline (%)": excess,
+        })
+
+    # ── Unrealized Open Trades (Separate reporting) ────────────────────────
+    if not open_df.empty:
+        open_rets = open_df["trade_return_pct"].values
+        open_mdd = open_df["max_drawdown_pct"].values
+        open_holding = open_df["holding_weeks"].values
+
+        open_milestone = (
+            open_df[milestone_col].sum() / len(open_df) * 100.0
+            if milestone_col in open_df.columns
+            else np.nan
+        )
+
+        summary.update({
+            "Open: Unrealized Win Rate (%)": round(float(np.mean(open_rets > 0)) * 100, 2),
+            "Open: Avg Unrealized Return (%)": round(float(np.mean(open_rets)), 2),
+            "Open: Median Unrealized Return (%)": round(float(np.median(open_rets)), 2),
+            "Open: Avg Holding so far (weeks)": round(float(np.mean(open_holding)), 1),
+            "Open: Avg Max Drawdown (%)": round(float(np.mean(open_mdd)), 2),
+            f"Open: Hit +{int(profit_milestone_pct)}% Milestone (%)": round(open_milestone, 2),
+        })
 
     return pd.DataFrame([summary])

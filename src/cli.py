@@ -20,7 +20,7 @@ def print_banner(title: str) -> None:
 
 def print_summary_table(summary_df: pd.DataFrame) -> None:
     if summary_df is None or summary_df.empty:
-        print("\n[INFO] No trades found — summary is empty.")
+        print("\n[INFO] No trades found - summary is empty.")
         return
     print_banner("NSE TREND BACKTEST SUMMARY REPORT")
     # Transpose for readability when there is only one row

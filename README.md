@@ -56,8 +56,8 @@ At every bar *t*, all indicators and signals are computed using only data up to 
 ├── src/
 │   ├── backtest/
 │   │   ├── engine.py           # Backtest orchestrator
-│   │   ├── metrics.py          # Aggregation & naive-baseline math
-│   │   └── trades.py           # Trade simulator (entry/exit loop, drawdown, milestone flag)
+│   │   ├── metrics.py          # Aggregation & naive-baseline math (strictly separates closed vs open)
+│   │   └── trades.py           # Trade simulator (post-entry drawdown & milestone tracking)
 │   ├── data/
 │   │   ├── fetch.py            # yfinance batch downloader with disk caching
 │   │   └── symbols.py          # NSE Nifty 500 list scraper
@@ -94,12 +94,6 @@ Display the most recently saved summary report (no re-download):
 python -m src.cli backtest --report
 ```
 
-Quick test on a small subset:
-
-```bash
-python -m src.cli backtest --years 3 --limit 50
-```
-
 ### Live Weekly Scanner
 
 Scan all Nifty 500 symbols and print those currently meeting entry criteria
@@ -113,29 +107,35 @@ Results are printed to the console and saved to `data/scan_alerts.csv`.
 
 ---
 
-## Backtest Results — Nifty 500, 3-Year Weekly (Latest Run)
+## Backtest Results — Nifty 500, 3-Year Weekly (Real Data)
 
 > Data source: Yahoo Finance (yfinance). 3 years of weekly OHLC.
 > 491 symbols had sufficient history (≥ 44 bars). 8 symbols skipped (delisted/insufficient data).
 
-| Metric | Value |
+### 1. Realized Closed Trades (1,244 Trades)
+| Metric | Realized Value |
 |---|---|
-| Total Trades | 1 331 |
-| Closed Trades | 1 244 |
-| Still Open at End of Data | 87 |
-| **Win Rate** | **37.49 %** |
-| **Avg Trade Return** | **+4.42 %** |
-| Median Trade Return | −4.45 % |
-| Avg Holding Period | 18 weeks |
-| Median Holding Period | 17 weeks |
-| Avg Max Drawdown | −20.33 % |
-| Worst Max Drawdown | −68.54 % |
-| Hit +20% Profit Milestone | 39.82 % of trades |
-| Baseline Avg Return (same hold period, unconditional) | +2.94 % |
-| **Excess Return vs Baseline** | **+1.48 %** |
+| **Closed Trades Count** | **1,244** |
+| **Win Rate** | **33.92 %** |
+| **Avg Trade Return** | **+0.50 %** |
+| **Median Trade Return** | **−5.17 %** |
+| **Avg Holding Period** | **17.6 weeks** (~4 months) |
+| **Median Holding Period** | **16.0 weeks** |
+| **Avg Max Drawdown (Intra-week)** | **−20.11 %** |
+| **Avg Max Drawdown (Close-to-Close)** | **−15.61 %** |
+| **Worst Max Drawdown** | **−68.54 %** |
+| **Hit +20% Profit Milestone** | **38.02 % of trades** |
+| **Naive Baseline Avg Return (17.6w hold)** | **+2.94 %** |
+| **Excess Return vs Baseline** | **−2.44 %** |
 
-> **Note**: The strategy generates a positive average excess return (+1.48%) over random
-> unconditional holding, but the median return is negative (−4.45%) and the win rate
-> is below 50%, which is characteristic of trend-following systems: a minority of large
-> winners outweigh a majority of small losers. The +20% milestone rate (≈40%) shows
-> many trades do reach meaningful profit levels before the exit fires.
+### 2. Active Open Positions (87 Trades at End of Data)
+*Positions that entered but have not yet closed below the 30-week SMA as of the end of the 3-year period:*
+| Metric | Unrealized Value |
+|---|---|
+| **Active Open Positions** | **87** |
+| **Unrealized Win Rate** | **88.51 %** (77 wins / 10 losses) |
+| **Avg Unrealized Return** | **+60.44 %** |
+| **Median Unrealized Return** | **+19.03 %** |
+| **Avg Holding Period so far** | **24.1 weeks** |
+| **Avg Max Drawdown so far** | **−16.79 %** |
+| **Hit +20% Milestone** | **65.52 %** |

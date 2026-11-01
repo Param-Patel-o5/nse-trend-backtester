@@ -111,9 +111,10 @@ def run_backtest(
     events_df = pd.DataFrame(all_trades)
     print(f"[BACKTEST] Total trades simulated: {len(events_df)}")
 
-    # ── 4. Naive baseline ──────────────────────────────────────────────────
-    avg_hold = float(events_df["holding_weeks"].mean()) if not events_df.empty else 10.0
-    print(f"[BACKTEST] Avg holding period: {avg_hold:.1f} weeks — computing baseline...")
+    # ── 4. Naive baseline (benchmarked to realized closed trades) ─────────
+    closed_events = events_df[events_df["still_open"] == False] if not events_df.empty else pd.DataFrame()
+    avg_hold = float(closed_events["holding_weeks"].mean()) if not closed_events.empty else 18.0
+    print(f"[BACKTEST] Closed trades avg holding period: {avg_hold:.1f} weeks - computing baseline...")
     baseline = compute_naive_baseline(
         dfs=valid_dfs,
         avg_holding_weeks=avg_hold,
