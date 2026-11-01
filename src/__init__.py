@@ -1,0 +1,1 @@
+"""Quant Signal Backtester package."""

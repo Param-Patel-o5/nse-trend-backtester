@@ -1,0 +1,30 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual Environment
+venv/
+.venv/
+env/
+ENV/
+
+# Configuration and secrets
+.env
+
+# Data & cache
+data/cache/
+data/golden_cross_alerts.csv
+data/backtest_events.csv
+data/backtest_summary.csv
+
+# Keep fallback symbol list
+!data/ind_nifty500list.csv
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
