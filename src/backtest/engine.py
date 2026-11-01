@@ -140,3 +140,4 @@ def run_backtest(
     }
 
     return summary_df, events_df, metadata
+

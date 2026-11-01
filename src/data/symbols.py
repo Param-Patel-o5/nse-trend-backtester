@@ -81,3 +81,4 @@ def get_nifty500_symbols(
         symbols = symbols[:cfg_limit]
 
     return symbols
+

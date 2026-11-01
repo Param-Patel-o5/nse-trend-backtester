@@ -155,3 +155,4 @@ def fetch_universe_data(
                 time.sleep(0.5)
 
     return results
+

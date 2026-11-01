@@ -138,3 +138,4 @@ def backtest_cmd(years: int, report: bool, limit: Optional[int], force_refresh: 
 
 if __name__ == "__main__":
     cli()
+

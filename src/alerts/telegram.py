@@ -58,3 +58,4 @@ def format_scan_message(
             f"SMA{slow_sma}: {r.get(f'sma{slow_sma}', r.get('sma50'))}"
         )
     return "\n".join(lines)
+

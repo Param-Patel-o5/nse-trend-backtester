@@ -25,3 +25,4 @@ cache:
   enabled: true
   cache_dir: "data/cache"
   max_cache_age_days: 3
+

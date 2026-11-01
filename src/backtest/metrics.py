@@ -163,3 +163,4 @@ def aggregate_backtest_results(
             })
 
     return pd.DataFrame(rows)
+
